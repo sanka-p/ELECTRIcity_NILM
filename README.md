@@ -13,10 +13,10 @@ The folder structure in the data folder should be:
 .
 ├── data                   
       └── UK_Dale 
-      │       └──House_1
+      │       └──house_1
       │       │    ├── .
       │       │    └── .
-      │       └──House_2
+      │       └──house_2
       │             .
       │             .
       └── REDD
@@ -44,9 +44,13 @@ The folder structure in the data folder should be:
 This repository provides the end-to-end pipeline to train a model using ELECTRIcity. 
 
 
-The required packages to run the code can be found in electricity.yml. Model training and testing can be done by running the electricity.py python file. 
+The required packages to run the code can be found in `venv.yml`. For a CUDA 12.6 GPU setup, create the conda environment first and then install the official PyTorch wheels from `requirements-cu126.txt`:
 
 ```bash
+conda env create -f venv.yml
+conda activate electricity
+pip install -r requirements-cu126.txt
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
 python electricity.py
 ```
 
