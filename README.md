@@ -20,10 +20,10 @@ The folder structure in the data folder should be:
       │             .
       │             .
       └── REDD
-      │       └──House_1
+      │       └──house_1
       │       │    ├── .
       │       │    └── .
-      │       └──House_2
+      │       └──house_2
       │            ├── .
       │            └── .   
       └── Refit
@@ -54,7 +54,7 @@ python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda
 python electricity.py
 ```
 
-First, config.py provides all the hyperparameters required in the pipeline. Then, the script creates a dataset parser for either UK_Dale, Refit or Redd, depending on the choice of the user in config.py (arugment dataset_code). Trainer.py contains all the functions necessary to perform model training and testing. 
+First, config.py provides all the hyperparameters required in the pipeline. Then, the script creates a dataset parser for either `uk_dale`, `refit`, or `redd_lf`, depending on the `dataset_code` argument in config.py. Trainer.py contains all the functions necessary to perform model training and testing. 
 
 After the model is trained and tested, the following results are exported in 'results/dataset_code/appliance_name/:
 1)best_acc_model.pth contains the exported weights of the model

@@ -17,10 +17,10 @@ def get_args():
     parser.add_argument('--dataset_code',       type = str,   default = 'refit', choices=['redd_lf', 'uk_dale','refit'])
     parser.add_argument('--house_indicies',     type = list,  default = [1, 2, 3, 4, 5])
 
-    # REDD Dataset appliance names:    'refrigerator', 'washer_dryer',   'microwave','dishwasher'
-    # UK Dale Dataset appliance names: 'fridge',       'washing_machine','microwave','dishwasher','kettle','toaster'
-    #Refit Dataset appliance names:    'Fridge,        'Washing_Machine','TV'
-    parser.add_argument('--appliance_names',    type = list,  default = ['Washing_Machine'])
+    # REDD Dataset appliance names:    'refrigerator', 'washer_dryer',   'microwave', 'dishwasher'
+    # UK Dale Dataset appliance names: 'fridge',       'washing_machine', 'microwave', 'dishwasher', 'kettle', 'toaster'
+    # Refit Dataset appliance names:   'Fridge-Freezer', 'Washing_Machine', 'TV'
+    parser.add_argument('--appliance_names',    nargs = '+',  default = None)
 
     parser.add_argument('--sampling',           type = str,   default = '6s')
     parser.add_argument('--normalize',          type = str,   default = 'mean',    choices=['mean', 'minmax','none'])
@@ -87,6 +87,14 @@ def setup_seed(seed):
 
 
 def update_preprocessing_parameters(args):
+    if args.appliance_names is None:
+        default_appliances = {
+            'redd_lf': ['refrigerator'],
+            'uk_dale': ['washing_machine'],
+            'refit': ['Washing_Machine'],
+        }
+        args.appliance_names = default_appliances[args.dataset_code]
+
     if args.dataset_code == 'redd_lf':
         args.cutoff = {
             'aggregate'   : 6000,
