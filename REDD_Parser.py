@@ -8,8 +8,17 @@ from   Pretrain_Dataset import *
 
 class Redd_Parser:
 
+    SUPPORTED_APPLIANCES = ['dishwasher', 'refrigerator', 'microwave', 'washer_dryer']
+    CLEANED_SAMPLING     = '6s'
+    CLEANED_NAME_MAP     = {
+        'main'         : 'aggregate',
+        'fridge'       : 'refrigerator',
+        'dish washer'  : 'dishwasher',
+        'washer dryer' : 'washer_dryer',
+    }
+
     def __init__(self,args,stats = None):
-        self.data_location   = args.redd_location
+        self.data_location   = Path(args.redd_location)
         self.house_indicies  = args.house_indicies
         self.appliance_names = args.appliance_names
         self.sampling        = args.sampling
@@ -43,71 +52,163 @@ class Redd_Parser:
         
     def load_data(self):
         for appliance in self.appliance_names:
-            assert appliance in ['dishwasher','refrigerator', 'microwave', 'washer_dryer']
+            assert appliance in self.SUPPORTED_APPLIANCES
 
         for house_id in self.house_indicies:
             assert house_id in [1, 2, 3, 4, 5, 6]
 
-            directory = Path(self.data_location) 
+        if self._has_cleaned_layout():
+            entire_data = self._load_cleaned_data()
+        elif self._has_raw_layout():
+            entire_data = self._load_raw_data()
+        else:
+            raise FileNotFoundError(
+                f'No REDD data found under {self.data_location}. '
+                'Expected either house_*/channel_*.dat files or cleaned redd_house*_*.csv files.'
+            )
 
-            for house_id in self.house_indicies:
-                house_folder = directory.joinpath('house_' + str(house_id))
-                house_label  = pd.read_csv(house_folder.joinpath('labels.dat'),    sep=' ', header=None)
-                main_1       = pd.read_csv(house_folder.joinpath('channel_1.dat'), sep=' ', header=None)
-                main_2       = pd.read_csv(house_folder.joinpath('channel_2.dat'), sep=' ', header=None)
-                
-                house_data            = pd.merge(main_1, main_2, how='inner', on=0)
-                house_data.iloc[:, 1] = house_data.iloc[:,1] + house_data.iloc[:,2]
-                house_data            = house_data.iloc[:, 0: 2]
+        selected_columns = ['aggregate'] + self.appliance_names
+        entire_data      = entire_data[selected_columns].apply(pd.to_numeric, errors='coerce')
+        entire_data      = entire_data.dropna().copy()
+        entire_data      = entire_data[entire_data['aggregate'] > 0]
+        entire_data      = entire_data.mask(entire_data < 5, 0)
+        entire_data      = entire_data.clip(lower=0)
+        entire_data      = entire_data.clip(upper=pd.Series(self.cutoff, index=selected_columns), axis=1)
 
-                appliance_list = house_label.iloc[:, 1].values
-                app_index_dict = defaultdict(list)
+        return entire_data['aggregate'].to_numpy(), entire_data[self.appliance_names[0]].to_numpy()
+
+    def _has_cleaned_layout(self):
+        return any(self.data_location.glob('redd_house*_*.csv'))
+
+    def _has_raw_layout(self):
+        return any(self.data_location.glob('house_*'))
+
+    def _load_cleaned_data(self):
+        house_frames = []
+
+        for house_id in self.house_indicies:
+            segment_paths = sorted(
+                self.data_location.glob(f'redd_house{house_id}_*.csv'),
+                key=self._cleaned_segment_key,
+            )
+            if not segment_paths:
+                continue
+
+            segment_frames     = []
+            house_has_appliance = False
+
+            for segment_path in segment_paths:
+                segment_data = pd.read_csv(segment_path, index_col=0)
+                segment_data = segment_data.rename(columns=self._normalize_cleaned_column_name)
+
+                if 'aggregate' not in segment_data.columns:
+                    raise ValueError(f'Cleaned REDD file {segment_path} is missing the aggregate/main column.')
+
+                available_appliances = [appliance for appliance in self.appliance_names if appliance in segment_data.columns]
+                house_has_appliance  = house_has_appliance or bool(available_appliances)
 
                 for appliance in self.appliance_names:
-                    try:
-                        idx = appliance_list.tolist().index(appliance)
-                        app_index_dict[appliance].append(idx+1)
-                    except ValueError:
-                        app_index_dict[appliance].append(-1)
+                    if appliance not in segment_data.columns:
+                        segment_data[appliance] = 0.0
 
-                if np.sum(list(app_index_dict.values())) == -len(self.appliance_names):
-                    self.house_indicies.remove(house_id)
+                segment_data = segment_data[['aggregate'] + self.appliance_names].copy()
+                segment_data = self._resample_cleaned_segment(segment_data)
+                segment_frames.append(segment_data.reset_index(drop=True))
+
+            if house_has_appliance and segment_frames:
+                house_frames.append(pd.concat(segment_frames, ignore_index=True))
+
+        if not house_frames:
+            raise ValueError(
+                f'None of the requested appliances {self.appliance_names} were found in cleaned REDD files at {self.data_location}.'
+            )
+
+        return pd.concat(house_frames, ignore_index=True)
+
+    def _load_raw_data(self):
+        house_frames = []
+
+        for house_id in self.house_indicies:
+            house_folder = self.data_location.joinpath('house_' + str(house_id))
+            if not house_folder.exists():
+                continue
+
+            house_label = pd.read_csv(house_folder.joinpath('labels.dat'), sep=' ', header=None)
+            main_1      = pd.read_csv(house_folder.joinpath('channel_1.dat'), sep=' ', header=None)
+            main_2      = pd.read_csv(house_folder.joinpath('channel_2.dat'), sep=' ', header=None)
+
+            house_data            = pd.merge(main_1, main_2, how='inner', on=0)
+            house_data.iloc[:, 1] = house_data.iloc[:, 1] + house_data.iloc[:, 2]
+            house_data            = house_data.iloc[:, 0: 2]
+            house_data.columns    = ['time', 'aggregate']
+            house_data['time']    = pd.to_datetime(house_data['time'], unit='s')
+            house_data            = house_data.set_index('time').resample(self.sampling).mean().ffill(limit=30)
+
+            app_index_dict = self._get_raw_appliance_channels(house_label)
+            if all(channels == [-1] for channels in app_index_dict.values()):
+                continue
+
+            for appliance in self.appliance_names:
+                channel_indices = app_index_dict[appliance]
+                if channel_indices == [-1]:
+                    house_data[appliance] = 0.0
                     continue
 
-                for appliance in self.appliance_names:
-                    if app_index_dict[appliance][0] == -1:
-                        temp_values          = house_data.copy().iloc[:, 1]
-                        temp_values[:]       = 0
-                        temp_data            = house_data.copy().iloc[:, :2]
-                        temp_data.iloc[:, 1] = temp_values
-                    else:
-                        temp_data = pd.read_csv(house_folder.joinpath('channel_' + str(app_index_dict[appliance][0]) + '.dat'), sep=' ', header=None)
+                appliance_frames = []
+                for channel_idx in channel_indices:
+                    channel_path = house_folder.joinpath('channel_' + str(channel_idx) + '.dat')
+                    if not channel_path.exists():
+                        continue
 
-                    if len(app_index_dict[appliance]) > 1:
-                        for idx in app_index_dict[appliance][1:]:
-                            temp_data_           = pd.read_csv(house_folder.joinpath('channel_' + str(idx) + '.dat'), sep=' ', header=None)
-                            temp_data            = pd.merge(temp_data, temp_data_, how='inner', on=0)
-                            temp_data.iloc[:, 1] = temp_data.iloc[:,1] + temp_data.iloc[:, 2]
-                            temp_data            = temp_data.iloc[:, 0: 2]
+                    appl_data         = pd.read_csv(channel_path, sep=' ', header=None)
+                    appl_data.columns = ['time', appliance]
+                    appl_data['time'] = pd.to_datetime(appl_data['time'], unit='s')
+                    appl_data         = appl_data.set_index('time').resample(self.sampling).mean().ffill(limit=30)
+                    appliance_frames.append(appl_data[appliance])
 
-                    house_data = pd.merge(house_data, temp_data, how='inner', on=0)
+                if not appliance_frames:
+                    house_data[appliance] = 0.0
+                    continue
 
-                    house_data.iloc[:, 0] = pd.to_datetime(house_data.iloc[:, 0], unit='s')
-                    house_data.columns    = ['time', 'aggregate'] + [i for i in self.appliance_names]
-                    house_data            = house_data.set_index('time')
-                    house_data            = house_data.resample(self.sampling).mean().fillna(method='ffill', limit=30)
+                summed_appliance = pd.concat(appliance_frames, axis=1, join='inner').sum(axis=1).to_frame(name=appliance)
+                house_data       = house_data.join(summed_appliance, how='inner')
 
-                    if house_id == self.house_indicies[0]:
-                        entire_data = house_data
-                    else:
-                        entire_data = entire_data.append(house_data, ignore_index=True)
+            house_frames.append(house_data[['aggregate'] + self.appliance_names].reset_index(drop=True))
 
-                    entire_data                  = entire_data.dropna().copy()
-                    entire_data                  = entire_data[entire_data['aggregate'] > 0]
-                    entire_data[entire_data < 5] = 0
-                    entire_data                  = entire_data.clip([0] * len(entire_data.columns), self.cutoff, axis=1)
+        if not house_frames:
+            raise ValueError(
+                f'None of the requested appliances {self.appliance_names} were found in raw REDD data at {self.data_location}.'
+            )
 
-            return entire_data.values[:, 0], entire_data.values[:, 1]
+        return pd.concat(house_frames, ignore_index=True)
+
+    def _get_raw_appliance_channels(self, house_label):
+        labels         = house_label.iloc[:, 1].astype(str).str.strip()
+        channel_ids    = house_label.iloc[:, 0].astype(int)
+        app_index_dict = defaultdict(list)
+
+        for appliance in self.appliance_names:
+            matches = channel_ids[labels == appliance].tolist()
+            app_index_dict[appliance] = matches if matches else [-1]
+
+        return app_index_dict
+
+    def _normalize_cleaned_column_name(self, column_name):
+        normalized = str(column_name).strip()
+        return self.CLEANED_NAME_MAP.get(normalized, normalized)
+
+    def _cleaned_segment_key(self, segment_path):
+        return int(segment_path.stem.split('_')[-1])
+
+    def _resample_cleaned_segment(self, segment_data):
+        if self.sampling == self.CLEANED_SAMPLING:
+            return segment_data
+
+        # Cleaned REDD CSVs are already sampled; synthesize a time index only to support coarser re-binning.
+        synthetic_time       = pd.date_range('1970-01-01', periods=len(segment_data), freq=self.CLEANED_SAMPLING)
+        segment_data         = segment_data.copy()
+        segment_data.index   = synthetic_time
+        return segment_data.resample(self.sampling).mean().ffill(limit=30)
     
     
     def compute_status(self, data):
