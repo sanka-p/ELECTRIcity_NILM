@@ -57,25 +57,18 @@ class Refit_Parser:
         for house_idx in self.house_indicies:
             house_data_loc = self._resolve_house_file(self.data_location, house_idx, self.DATA_FILE_PATTERNS)
             label_path     = self._resolve_house_file(self.labels_location, house_idx, self.LABEL_FILE_PATTERNS)
+            house_labels   = self._read_house_labels(label_path)
+            house_data     = pd.read_csv(house_data_loc)
+            house_data     = self._prepare_house_data(house_data, house_labels, house_data_loc)
 
-            with open(label_path) as f:
-                house_labels = f.readline().strip().split(',')
+            if self.appliance_names[0] not in house_data.columns:
+                continue
 
-            house_labels = ['Time'] + house_labels
-
-            if self.appliance_names[0] in house_labels:
-                house_data = pd.read_csv(house_data_loc)
-                house_data['Unix'] = pd.to_datetime(house_data['Unix'], unit = 's')
-
-                house_data         = house_data.drop(labels = ['Time'],axis = 1)
-                house_data.columns = house_labels
-                house_data = house_data.set_index('Time')
-
-                idx_to_drop = house_data[house_data['Issues']==1].index
-                house_data = house_data.drop(index = idx_to_drop, axis = 0)
-                house_data = house_data[['Aggregate',self.appliance_names[0]]]
-                house_data = house_data.resample(self.sampling).mean().fillna(method='ffill', limit=30)
-                house_frames.append(house_data.reset_index(drop=True))
+            idx_to_drop = house_data[house_data['Issues'] == 1].index
+            house_data = house_data.drop(index = idx_to_drop, axis = 0)
+            house_data = house_data[['Aggregate',self.appliance_names[0]]]
+            house_data = house_data.resample(self.sampling).mean().fillna(method='ffill', limit=30)
+            house_frames.append(house_data.reset_index(drop=True))
 
         if not house_frames:
             raise ValueError(
@@ -100,6 +93,68 @@ class Refit_Parser:
         candidate_names = ', '.join(pattern.format(house_idx=house_idx) for pattern in candidate_patterns)
         raise FileNotFoundError(
             f'Could not find REFiT house file for house {house_idx} in {directory}. Tried: {candidate_names}'
+        )
+
+    def _read_house_labels(self, label_path):
+        with open(label_path) as f:
+            return [label.strip() for label in f.readline().strip().split(',') if label.strip()]
+
+    def _prepare_house_data(self, house_data, house_labels, house_data_loc):
+        house_data         = house_data.copy()
+        house_data.columns = [str(column).strip() for column in house_data.columns]
+
+        time_index = self._build_time_index(house_data, house_data_loc)
+        house_data = house_data.drop(columns = ['Time', 'Unix'], errors = 'ignore')
+        house_data = self._align_house_columns(house_data, house_labels, house_data_loc)
+        house_data.index = time_index
+        house_data.index.name = 'Time'
+
+        return house_data
+
+    def _build_time_index(self, house_data, house_data_loc):
+        if 'Unix' in house_data.columns:
+            unix_values = pd.to_numeric(house_data['Unix'], errors='coerce')
+            if unix_values.notna().all():
+                time_index = pd.to_datetime(unix_values, unit='s')
+            else:
+                time_index = pd.to_datetime(house_data['Unix'], errors='coerce')
+        elif 'Time' in house_data.columns:
+            time_index = pd.to_datetime(house_data['Time'], errors='coerce')
+        else:
+            raise ValueError(f'REFiT file {house_data_loc} is missing both Unix and Time columns.')
+
+        if time_index.isna().any():
+            raise ValueError(f'Failed to parse timestamps in REFiT file {house_data_loc}.')
+
+        return time_index
+
+    def _align_house_columns(self, house_data, house_labels, house_data_loc):
+        required_columns = {'Aggregate', self.appliance_names[0]}
+        current_columns  = set(house_data.columns)
+
+        if required_columns.issubset(current_columns):
+            if 'Issues' not in house_data.columns:
+                house_data['Issues'] = 0
+            return house_data
+
+        unnamed_columns = [column for column in house_data.columns if str(column).startswith('Unnamed')]
+        if unnamed_columns:
+            trimmed_data = house_data.drop(columns=unnamed_columns)
+            if len(trimmed_data.columns) in (len(house_labels), len(house_labels) - 1):
+                house_data = trimmed_data
+
+        if len(house_data.columns) == len(house_labels):
+            house_data.columns = house_labels
+            return house_data
+
+        if len(house_data.columns) == len(house_labels) - 1 and house_labels[-1] == 'Issues':
+            house_data.columns = house_labels[:-1]
+            house_data['Issues'] = 0
+            return house_data
+
+        raise ValueError(
+            f'REFiT file {house_data_loc} has {len(house_data.columns)} non-time columns, '
+            f'but label file describes {len(house_labels)} columns.'
         )
 
 

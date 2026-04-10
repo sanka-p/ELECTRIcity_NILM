@@ -1,5 +1,5 @@
 import torch
-torch.set_default_tensor_type(torch.DoubleTensor)
+torch.set_default_dtype(torch.float64)
 
 # import argparse
 from   config            import *
@@ -93,4 +93,3 @@ if __name__ == "__main__":
 
     fname = trainer.export_root.joinpath('results.pkl')
     pkl.dump(results,open( fname, "wb" )) 
-
