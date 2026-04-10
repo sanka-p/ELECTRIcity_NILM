@@ -1,4 +1,3 @@
-import os
 import numpy  as np
 import pandas as pd
 from pathlib import Path
@@ -7,11 +6,19 @@ from   Pretrain_Dataset import *
 
 class Refit_Parser:
 
+    DATA_FILE_PATTERNS  = ('House{house_idx}.csv', 'House_{house_idx}.csv', 'house{house_idx}.csv', 'house_{house_idx}.csv')
+    LABEL_FILE_PATTERNS = ('House{house_idx}.txt', 'House_{house_idx}.txt', 'house{house_idx}.txt', 'house_{house_idx}.txt')
+
     def __init__(self, args, stats = None):
-        self.dataset_location = args.refit_location
-        assert 'Data','Labels' in os.listdir(self.dataset_location);'Incorrect Folder Structure'
-        self.data_location    = Path(args.refit_location).joinpath('Data')
-        self.labels_location  = Path(args.refit_location).joinpath('Labels')
+        self.dataset_location = Path(args.refit_location)
+        self.data_location    = self.dataset_location.joinpath('Data')
+        self.labels_location  = self.dataset_location.joinpath('Labels')
+
+        if not self.data_location.is_dir() or not self.labels_location.is_dir():
+            raise FileNotFoundError(
+                f'Incorrect REFiT folder structure under {self.dataset_location}. '
+                'Expected Data/ and Labels/ directories.'
+            )
 
         self.appliance_names  = args.appliance_names
         self.sampling         = args.sampling
@@ -45,15 +52,16 @@ class Refit_Parser:
 
 
     def load_data(self):
+        house_frames = []
+
         for house_idx in self.house_indicies:
-            filename  = 'House'+str(house_idx)+'.csv'
-            labelname = 'House'+str(house_idx)+'.txt'
-            house_data_loc = self.data_location/filename
+            house_data_loc = self._resolve_house_file(self.data_location, house_idx, self.DATA_FILE_PATTERNS)
+            label_path     = self._resolve_house_file(self.labels_location, house_idx, self.LABEL_FILE_PATTERNS)
 
-            with open(self.labels_location/labelname) as f:
-                house_labels = f.readlines()
+            with open(label_path) as f:
+                house_labels = f.readline().strip().split(',')
 
-            house_labels = ['Time'] + house_labels[0].split(',')
+            house_labels = ['Time'] + house_labels
 
             if self.appliance_names[0] in house_labels:
                 house_data = pd.read_csv(house_data_loc)
@@ -67,14 +75,14 @@ class Refit_Parser:
                 house_data = house_data.drop(index = idx_to_drop, axis = 0)
                 house_data = house_data[['Aggregate',self.appliance_names[0]]]
                 house_data = house_data.resample(self.sampling).mean().fillna(method='ffill', limit=30)
+                house_frames.append(house_data.reset_index(drop=True))
 
-                if house_idx == self.house_indicies[0]:
-                    entire_data = house_data
-                    if len(self.house_indicies) == 1:
-                        entire_data = entire_data.reset_index(drop=True)
-                else:
-                    entire_data = entire_data.append(house_data, ignore_index=True)
+        if not house_frames:
+            raise ValueError(
+                f'None of the requested appliances {self.appliance_names} were found in REFiT files at {self.dataset_location}.'
+            )
 
+        entire_data = pd.concat(house_frames, ignore_index=True)
 
         entire_data                  = entire_data.dropna().copy()
         entire_data                  = entire_data[entire_data['Aggregate'] > 0] #remove negative values (possible mistakes)
@@ -82,6 +90,17 @@ class Refit_Parser:
         entire_data                  = entire_data.clip([0] * len(entire_data.columns), self.cutoff, axis=1) # force values to be between 0 and cutoff
 
         return entire_data.values[:, 0], entire_data.values[:, 1]
+
+    def _resolve_house_file(self, directory, house_idx, candidate_patterns):
+        for pattern in candidate_patterns:
+            candidate = directory / pattern.format(house_idx=house_idx)
+            if candidate.exists():
+                return candidate
+
+        candidate_names = ', '.join(pattern.format(house_idx=house_idx) for pattern in candidate_patterns)
+        raise FileNotFoundError(
+            f'Could not find REFiT house file for house {house_idx} in {directory}. Tried: {candidate_names}'
+        )
 
 
 
