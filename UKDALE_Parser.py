@@ -53,7 +53,8 @@ class UK_Dale_Parser:
             assert house_id in [1, 2, 3, 4, 5]
         
         directory = Path(self.data_location)
-        
+        entire_data = None
+
         for house_id in self.house_indicies:
             house_folder = directory.joinpath('house_' + str(house_id))
             house_label  = pd.read_csv(house_folder.joinpath('labels.dat'),    sep=' ', header=None)    
@@ -93,13 +94,14 @@ class UK_Dale_Parser:
                     appl_data         = appl_data.set_index('time').resample(self.sampling).mean().fillna(method = 'ffill', limit = 30)   
                     house_data        = pd.merge(house_data, appl_data, how='inner', on='time')
                                             
-            if house_id == self.house_indicies[0]:
+            if entire_data is None:
                 entire_data = house_data
-                if len(self.house_indicies) == 1:
-                    entire_data = entire_data.reset_index(drop=True)
             else:
                 entire_data = entire_data.append(house_data, ignore_index=True)
                 
+        if entire_data is None:
+            raise ValueError("No valid house data found for the given house indices and appliances.")
+
         entire_data                  = entire_data.dropna().copy()
         entire_data                  = entire_data[entire_data['aggregate'] > 0] #remove negative values (possible mistakes)
         entire_data[entire_data < 5] = 0 #remove very low values
